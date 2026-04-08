@@ -54,6 +54,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _stopCommand = new RelayCommand(Stop, () => SelectedTrack is not null);
         _nextCommand = new RelayCommand(PlayNext, () => Playlist.Count > 1);
         _previousCommand = new RelayCommand(PlayPrevious, () => Playlist.Count > 1);
+
+        RefreshPlaylistFromDisk();
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -169,14 +171,38 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         foreach (string file in dialog.FileNames)
         {
-            Playlist.Add(new Track
-            {
-                Title = Path.GetFileNameWithoutExtension(file),
-                FilePath = file
-            });
+            MusicLibraryService.CopyIntoMusicLibrary(file);
         }
 
-        if (SelectedTrack is null && Playlist.Count > 0)
+        RefreshPlaylistFromDisk();
+    }
+
+    /// <summary>
+    /// 从程序目录下 music 文件夹重新扫描并填充播放列表（启动时与导入后调用）。
+    /// </summary>
+    private void RefreshPlaylistFromDisk()
+    {
+        string? previousPath = SelectedTrack?.FilePath;
+
+        Playlist.Clear();
+        MusicLibraryService.EnsureMusicDirectoryExists();
+        foreach (Track track in MusicLibraryService.ScanTracks())
+        {
+            Playlist.Add(track);
+        }
+
+        if (Playlist.Count == 0)
+        {
+            SelectedTrack = null;
+            _currentTrackIndex = -1;
+        }
+        else if (previousPath is not null)
+        {
+            SelectedTrack = Playlist.FirstOrDefault(t =>
+                string.Equals(t.FilePath, previousPath, StringComparison.OrdinalIgnoreCase))
+                ?? Playlist[0];
+        }
+        else
         {
             SelectedTrack = Playlist[0];
         }
