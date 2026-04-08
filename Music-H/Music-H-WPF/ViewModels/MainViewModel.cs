@@ -173,11 +173,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        foreach (string file in dialog.FileNames)
+        string[] plainAudioFiles = dialog.FileNames
+            .Where(MusicLibraryService.IsPlainAudioFile)
+            .ToArray();
+        string[] encryptedFiles = dialog.FileNames
+            .Except(plainAudioFiles, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        foreach (string file in plainAudioFiles)
         {
             try
             {
-                await ImportOneTrackAsync(file);
+                MusicLibraryService.CopyIntoMusicLibrary(file);
             }
             catch (Exception ex)
             {
@@ -189,35 +196,79 @@ public sealed class MainViewModel : INotifyPropertyChanged
             }
         }
 
+        if (encryptedFiles.Length > 0)
+        {
+            await ImportEncryptedTracksBatchAsync(encryptedFiles);
+        }
+
         RefreshPlaylistFromDisk();
     }
 
     /// <summary>
-    /// 普通音频扩展名直接复制到 music；其余路径走解密后再写入 music。
+    /// 加密文件批量解密并写入 music 目录；异常时回退单文件处理，避免整批失败。
     /// </summary>
-    private async Task ImportOneTrackAsync(string filePath)
+    private async Task ImportEncryptedTracksBatchAsync(IReadOnlyList<string> encryptedFiles)
     {
-        if (MusicLibraryService.IsPlainAudioFile(filePath))
-        {
-            MusicLibraryService.CopyIntoMusicLibrary(filePath);
-            return;
-        }
-
+        var inputs = new List<MusicDecryptInput>(encryptedFiles.Count);
         try
         {
-            MusicDecryptResultDto dto = await _decryptAppService.DecryptFromFileAsync(filePath);
-            try
+            foreach (string filePath in encryptedFiles)
             {
-                await MusicLibraryService.SaveStreamToMusicLibraryAsync(dto.FileStream, dto.FileName);
+                inputs.Add(new MusicDecryptInput(
+                    Stream: new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous),
+                    FileName: Path.GetFileName(filePath)));
             }
-            finally
+
+            List<MusicDecryptResultDto> results = await _decryptAppService.BatchDecryptAsync(inputs);
+            foreach (MusicDecryptResultDto dto in results)
             {
-                await dto.FileStream.DisposeAsync();
+                try
+                {
+                    await MusicLibraryService.SaveStreamToMusicLibraryAsync(dto.FileStream, dto.FileName);
+                }
+                finally
+                {
+                    await dto.FileStream.DisposeAsync();
+                }
             }
         }
-        catch (NotSupportedException)
+        catch
         {
-            MusicLibraryService.CopyIntoMusicLibrary(filePath);
+            // 批量失败时降级为逐个导入，确保可导入的文件仍能进库。
+            foreach (string filePath in encryptedFiles)
+            {
+                try
+                {
+                    MusicDecryptResultDto dto = await _decryptAppService.DecryptFromFileAsync(filePath);
+                    try
+                    {
+                        await MusicLibraryService.SaveStreamToMusicLibraryAsync(dto.FileStream, dto.FileName);
+                    }
+                    finally
+                    {
+                        await dto.FileStream.DisposeAsync();
+                    }
+                }
+                catch (NotSupportedException)
+                {
+                    MusicLibraryService.CopyIntoMusicLibrary(filePath);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(
+                        $"无法导入「{Path.GetFileName(filePath)}」：{ex.Message}",
+                        "导入",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
+            }
+        }
+        finally
+        {
+            foreach (MusicDecryptInput input in inputs)
+            {
+                await input.Stream.DisposeAsync();
+            }
         }
     }
 
