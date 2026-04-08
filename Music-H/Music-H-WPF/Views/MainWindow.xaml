@@ -12,6 +12,7 @@
         Title="H-Music"
         Height="650"
         Width="1100"
+        Icon="pack://application:,,,/Resources/app_icon.ico"
         WindowStartupLocation="CenterScreen">
     <Grid>
         <Grid Margin="24">
