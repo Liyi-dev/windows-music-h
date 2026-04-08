@@ -2,18 +2,21 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using Music_H_WPF.Commands;
 using Music_H_WPF.Models;
 using Music_H_WPF.Services;
+using Music_H_WPF.Services.Impl;
 
 namespace Music_H_WPF.ViewModels;
 
 public sealed class MainViewModel : INotifyPropertyChanged
 {
     private readonly IAudioPlayerService _audioPlayerService;
+    private readonly IMusicDecryptAppService _decryptAppService;
     private readonly DispatcherTimer _progressTimer;
     private readonly RelayCommand _playCommand;
     private readonly RelayCommand _pauseCommand;
@@ -33,6 +36,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public MainViewModel()
     {
         _audioPlayerService = new AudioPlayerService();
+        _decryptAppService = new MusicDecryptAppService();
         _audioPlayerService.MediaEnded += (_, _) => PlayNext();
         _audioPlayerService.MediaOpened += (_, _) =>
         {
@@ -156,11 +160,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _isSeeking = false;
     }
 
-    private void ImportTracks()
+    private async void ImportTracks()
     {
         OpenFileDialog dialog = new()
         {
-            Filter = "Audio Files|*.mp3;*.wav;*.flac;*.aac;*.m4a;*.wma|All Files|*.*",
+            Filter = "音乐与加密文件|*.mp3;*.wav;*.flac;*.aac;*.m4a;*.wma;*.ogg;*.ncm;*.kgm;*.kwm|所有文件|*.*",
             Multiselect = true
         };
 
@@ -171,10 +175,50 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         foreach (string file in dialog.FileNames)
         {
-            MusicLibraryService.CopyIntoMusicLibrary(file);
+            try
+            {
+                await ImportOneTrackAsync(file);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"无法导入「{Path.GetFileName(file)}」：{ex.Message}",
+                    "导入",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
         }
 
         RefreshPlaylistFromDisk();
+    }
+
+    /// <summary>
+    /// 普通音频扩展名直接复制到 music；其余路径走解密后再写入 music。
+    /// </summary>
+    private async Task ImportOneTrackAsync(string filePath)
+    {
+        if (MusicLibraryService.IsPlainAudioFile(filePath))
+        {
+            MusicLibraryService.CopyIntoMusicLibrary(filePath);
+            return;
+        }
+
+        try
+        {
+            MusicDecryptResultDto dto = await _decryptAppService.DecryptFromFileAsync(filePath);
+            try
+            {
+                await MusicLibraryService.SaveStreamToMusicLibraryAsync(dto.FileStream, dto.FileName);
+            }
+            finally
+            {
+                await dto.FileStream.DisposeAsync();
+            }
+        }
+        catch (NotSupportedException)
+        {
+            MusicLibraryService.CopyIntoMusicLibrary(filePath);
+        }
     }
 
     /// <summary>
